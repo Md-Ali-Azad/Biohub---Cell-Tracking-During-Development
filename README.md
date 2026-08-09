@@ -48,18 +48,40 @@ If you're new to the dataset, start with `biohub-dataset-visualization.ipynb`. I
 
 The three solution notebooks are separate attempts, roughly in the order I tried them.
 
+## Methodology
+
+The obvious first instinct for a task like this is to reach for deep learning, and that's clearly the direction most of the competition is heading. I wanted to try the other path first: how far can plain image analysis actually get you here, without a GPU, without training data, without any of that cost? No neural nets in any of the three notebooks below, just Gaussian filtering, watershed segmentation, and distance-based matching. Partly this was a cost and speed thing. Also, I just wanted an honest answer to whether classical methods still hold up on real, messy microscopy data before deciding a learned model was actually necessary.
+ 
+Three attempts so far, each one fixing a specific thing I didn't like about the last.
+ 
+### `azad-biohub-first-solution.ipynb` — the baseline
+ 
+This one is deliberately simple, and it doesn't do anything with deep learning. Detection is a multi-scale difference-of-Gaussians blob detector: normalize each frame, run three pairs of Gaussian blurs at different sigmas (tuned in physical microns, then converted to voxels using the z/y/x scale), subtract each pair, and keep whatever comes out as a local maximum above a threshold. Centroids get refined afterward with a quick weighted-average pass around each peak.
+ 
+For linking, I used a straightforward Hungarian assignment between consecutive frames: predict each track's next position from its current velocity, build a cost matrix out of the scaled centroid distances, and solve it. There's a gap-closing step afterward that stitches together tracks separated by a missed detection or two, matching endpoints across a short time window instead of just adjacent frames.
+ 
+The obvious gap here, and I knew it going in, is that this linker can only ever produce one edge per node. A cell that splits into two daughters has nowhere to put the second edge, so every division in the ground truth was guaranteed to score as a miss no matter how good the detection was. This version exists mostly to get a working end-to-end pipeline (detect → link → write submission.csv) and a number on the board before touching anything more complicated.
+ 
+### `azad-biohub-second-solution.ipynb` — adding divisions
+ 
+Same detector as the first pass. The change here is entirely in the linker. After the normal one-to-one Hungarian assignment runs, there's a second pass that looks at whatever detections in the next frame didn't get claimed by anyone, and checks if one of them sits close to a track that already has a match. If it does, and the two candidate daughters are roughly symmetric in their distance from the parent (not one right next to it and one far away, which usually means the second point is just an unrelated neighboring cell), it gets treated as a division and both daughters get an edge from the parent.
+ 
+I also added a few bookkeeping functions on top: one that walks the finished graph looking for nodes with exactly two outgoing edges and tags them as divisions in the metadata, and one that prints out a quick summary (how many divisions got found, a sample of them with their timestamps) so I could sanity-check the output without opening the CSV by hand every time.
+ 
+The CONFIG in this notebook is tuned a bit differently from the first one too — smaller `xy_downsample`, tighter division radius, wider symmetry tolerance — mostly from trial and error trying to cut down on false-positive divisions, since early on the division pass was a little too eager to call two nearby cells siblings when they were really just two cells that happened to be close.
+ 
+### `azad-biohub-third-solution-watershed.ipynb` — dealing with touching cells
+ 
+The peak-picking detector has a real weakness: when two cells sit close enough together that their brightness profiles overlap, the local-maximum step either merges them into a single peak or, worse, finds two peaks inside what's actually one blob. This notebook swaps that out for a marker-controlled watershed instead. The same DoG peaks are still computed, but now they're used as seed points for a watershed segmentation rather than being taken directly as the final cell centers, so the boundary between two touching cells gets resolved by where the intensity actually dips between them instead of by however NMS happened to break the tie. I also added per-z-block intensity normalization here, since the signal gets dimmer with depth in these volumes, and a single global brightness threshold was under-detecting cells in the deeper slices.
+ 
+The linker got an upgrade to match: alongside centroid distance, the Hungarian cost now also factors in how close a candidate's brightness is to what the track has been showing. In a crowded region where two cells are nearly the same distance from a track's predicted position, this appearance term is often the only thing that tells them apart.
+ 
+Both of these are behind config flags (`use_watershed`, `use_appearance_cost`), defaulting to on in this notebook but easy to flip off to fall back to the second solution's behavior for comparison.
+ 
+One honest note: this notebook imports PyTorch and sets up a GPU check at the top, but there's no actual model being trained or run here yet; that import is left over from where I was planning to add a learned detector next. Everything in this version is still classical image processing (watershed, distance-based cost matrices), not deep learning.
+
+
+
 ## Citation
 
 Thibaut Goldsborough, Jordão Bragantini, Xiang Zhao, Gordon Leary, Teun Huijben, Ilan da Silva Theodoro, Kyle Harrington, Chi-Li Chiu, Walter Reade, María Cruz, and Loïc A. Royer. Biohub - Cell Tracking During Development. https://kaggle.com/competitions/biohub-cell-tracking-during-development, 2026. Kaggle.
-
-## Methodology
-
-Write-up for each solution below.
-
-### `azad-biohub-first-solution.ipynb`
-
-
-### `azad-biohub-second-solution.ipynb`
-
-
-### `azad-biohub-third-solution-watershed.ipynb`
